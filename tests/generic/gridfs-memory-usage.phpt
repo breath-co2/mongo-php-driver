@@ -1,11 +1,13 @@
 --TEST--
 GridFS: Testing memory usage
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php if (getenv('SKIP_SLOW_TESTS')) die('skip slow tests excluded by request'); ?>
+<?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$conn = Mongo();
+require_once "tests/utils/server.inc";
+$dsn = MongoShellServer::getStandaloneInfo();
+$conn = new MongoClient($dsn);
 $db   = $conn->selectDb('phpunit');
 $grid = $db->getGridFs('wrapper');
 
@@ -17,7 +19,7 @@ $bytes = "";
 for ($i=0; $i < 200*1024; $i++) {
     $bytes .= sha1(rand(1, 1000000000));
 }
-$grid->storeBytes($bytes, array("filename" => "demo.txt"), array('safe' => true));
+$grid->storeBytes($bytes, array("filename" => "demo.txt"), array('w' => true));
 
 // fetch it
 $file = $grid->findOne(array('filename' => 'demo.txt'));

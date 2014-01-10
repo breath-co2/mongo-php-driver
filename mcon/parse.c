@@ -1,3 +1,18 @@
+/**
+ *  Copyright 2009-2013 10gen, Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,13 +36,20 @@ mongo_servers* mongo_parse_init(void)
 	servers = malloc(sizeof(mongo_servers));
 	memset(servers, 0, sizeof(mongo_servers));
 	servers->count = 0;
-	servers->repl_set_name = NULL;
-	servers->con_type = MONGO_CON_TYPE_STANDALONE;
+	servers->options.repl_set_name = NULL;
+	servers->options.con_type = MONGO_CON_TYPE_STANDALONE;
 
-	servers->default_do_gle = -1;
-	servers->default_w = -1;
-	servers->default_wstring = NULL;
-	servers->default_wtimeout = -1;
+	servers->options.connectTimeoutMS = 0;
+	servers->options.socketTimeoutMS = -1;
+	servers->options.secondaryAcceptableLatencyMS = MONGO_RP_DEFAULT_ACCEPTABLE_LATENCY_MS;
+	servers->options.default_w = -1;
+	servers->options.default_wstring = NULL;
+	servers->options.default_wtimeout = -1;
+	servers->options.default_fsync = 0;
+	servers->options.default_journal = 0;
+	servers->options.ssl = MONGO_SSL_DISABLE;
+	servers->options.gssapiServiceName = strdup("mongodb");
+	servers->options.ctx = NULL;
 
 	return servers;
 }
@@ -109,9 +131,10 @@ int mongo_parse_server_spec(mongo_con_manager *manager, mongo_servers *servers, 
 			pos++;
 		} while (*pos != '\0');
 
-		/* We are now either at the end of the string, or at / where the dbname starts.
-		 * We still have to add the last parser host/port combination though: */
-		mongo_add_parsed_server_addr(manager, servers, host_start, host_end, port_start);
+		/* We are now either at the end of the string, or at / where the dbname
+		 * starts.  We still have to add the last parser host/port combination
+		 * though: */
+		mongo_add_parsed_server_addr(manager, servers, host_start, host_end ? host_end : pos, port_start);
 	} else if (*pos == '/') {
 		host_start = pos;
 		port_start = "0";
@@ -123,8 +146,9 @@ int mongo_parse_server_spec(mongo_con_manager *manager, mongo_servers *servers, 
 		 */
 		last_slash = strrchr(pos, '/');
 
-		/* The last component of the path *could* be a database name.
-		 * The rule is; if the last component has a dot, we use the full string since "host_start" as host */
+		/* The last component of the path *could* be a database name.  The rule
+		 * is; if the last component has a dot, we use the full string since
+		 * "host_start" as host */
 		if (strchr(last_slash, '.')) {
 			host_end = host_start + strlen(host_start);
 		} else {
@@ -137,10 +161,10 @@ int mongo_parse_server_spec(mongo_con_manager *manager, mongo_servers *servers, 
 	/* Set the default connection type, we might change this if we encounter
 	 * the replicaSet option later */
 	if (servers->count == 1) {
-		servers->con_type = MONGO_CON_TYPE_STANDALONE;
+		servers->options.con_type = MONGO_CON_TYPE_STANDALONE;
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Connection type: STANDALONE");
 	} else {
-		servers->con_type = MONGO_CON_TYPE_MULTIPLE;
+		servers->options.con_type = MONGO_CON_TYPE_MULTIPLE;
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Connection type: MULTIPLE");
 	}
 
@@ -176,13 +200,13 @@ int mongo_parse_server_spec(mongo_con_manager *manager, mongo_servers *servers, 
 				free(tmp_pass);
 				free(tmp_database);
 
-				return 1;
+				return retval;
 			}
 		}
 	}
 
 	/* Handling database name */
-	if (db_start) {
+	if (db_start && (db_end != db_start)) {
 		tmp_database = mcon_strndup(db_start, db_end - db_start);
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found database name '%s'", tmp_database);
 	} else if (tmp_user && tmp_pass) {
@@ -211,7 +235,8 @@ void static mongo_add_parsed_server_addr(mongo_con_manager *manager, mongo_serve
 
 	tmp = malloc(sizeof(mongo_server_def));
 	memset(tmp, 0, sizeof(mongo_server_def));
-	tmp->username = tmp->password = tmp->db = NULL;
+	tmp->username = tmp->password = tmp->db = tmp->authdb = NULL;
+	tmp->mechanism = MONGO_AUTH_MECHANISM_MONGODB_CR; /* MONGODB-CR is the default authentication mechanism */
 	tmp->port = 27017;
 
 	tmp->host = mcon_strndup(host_start, host_end - host_start);
@@ -224,16 +249,26 @@ void static mongo_add_parsed_server_addr(mongo_con_manager *manager, mongo_serve
 }
 
 /* Processes a single option/value pair.
- * Returns 0 if it worked, 1 if either name or value was missing, 2 if the option didn't exist, 3 on logic errors
- */
+ * Returns:
+ * -1 if it worked, but the option really shouldn't be used
+ * 0 if it worked
+ * 1 if either name or value was missing
+ * 2 if the option didn't exist
+ * 3 on logic errors */
 int static mongo_process_option(mongo_con_manager *manager, mongo_servers *servers, char *name, char *value, char *pos, char **error_message)
 {
 	char *tmp_name;
 	char *tmp_value;
 	int   retval = 0;
 
-	if (!name || !value) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Got an empty option name or value");
+	if (!name || strcmp(name, "") == 0 || (name + 1 == value)) {
+		*error_message = strdup("- Found an empty option name");
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Found an empty option name");
+		return 1;
+	}
+	if (!value) {
+		*error_message = strdup("- Found an empty option value");
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Found an empty option value");
 		return 1;
 	}
 
@@ -265,8 +300,10 @@ static int parse_read_preference_tags(mongo_con_manager *manager, mongo_servers 
 			end = strchr(start, ',');
 			colon = strchr(start, ':');
 			if (!colon) {
-				*error_message = malloc(256 + strlen(start));
-				snprintf(*error_message, 256 + strlen(start), "Error while trying to parse tags: No separator for '%s'", start);
+				int len = strlen(start) + sizeof("Error while trying to parse tags: No separator for ''");
+
+				*error_message = malloc(len + 1);
+				snprintf(*error_message, len, "Error while trying to parse tags: No separator for '%s'", start);
 				mongo_read_preference_tagset_dtor(tmp_ts);
 				return 3;
 			}
@@ -274,10 +311,12 @@ static int parse_read_preference_tags(mongo_con_manager *manager, mongo_servers 
 			if (end) {
 				tmp_value = mcon_strndup(colon + 1, end - colon - 1);
 				start = end + 1;
+				mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found tag '%s': '%s'", tmp_name, tmp_value);
 				mongo_read_preference_add_tag(tmp_ts, tmp_name, tmp_value);
 				free(tmp_value);
 				free(tmp_name);
 			} else {
+				mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found tag '%s': '%s'", tmp_name, colon + 1);
 				mongo_read_preference_add_tag(tmp_ts, tmp_name, colon + 1);
 				free(tmp_name);
 				break;
@@ -289,53 +328,97 @@ static int parse_read_preference_tags(mongo_con_manager *manager, mongo_servers 
 }
 
 /* Sets server options.
- * Returns 0 if it worked, 2 if the option didn't exist, 3 on logical errors.
- * On logical errors, the error_message will be populated with the reason.
- */
+ * Returns:
+ * 0 if it worked
+ * 2 if the option didn't exist
+ * 3 on logical errors.
+ *
+ * On logical errors, the error_message will be populated with the reason. */
 int mongo_store_option(mongo_con_manager *manager, mongo_servers *servers, char *option_name, char *option_value, char **error_message)
 {
 	int i;
 
-	if (strcasecmp(option_name, "replicaSet") == 0) {
-		if (servers->repl_set_name) {
-			/* Free the already existing one */
-			free(servers->repl_set_name);
-			servers->repl_set_name = NULL; /* We reset it as not all options set a string as replset name */
-		}
+	if (strcasecmp(option_name, "authMechanism") == 0) {
+		int mechanism;
 
-		if (option_value && *option_value) {
-			/* We explicitly check for the stringified version of "true" here,
-			 * as "true" has a special meaning. It does not mean that the
-			 * replicaSet name is "1". */
-			if (strcmp(option_value, "1") != 0) {
-				servers->repl_set_name = strdup(option_value);
-				mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'replicaSet': '%s'", option_value);
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'authMechanism': '%s'", option_value);
+		if (strcasecmp(option_value, "MONGODB-CR") == 0) {
+			mechanism = MONGO_AUTH_MECHANISM_MONGODB_CR;
+		} else if (strcasecmp(option_value, "MONGODB-X509") == 0) {
+			mechanism = MONGO_AUTH_MECHANISM_MONGODB_X509;
+		} else if (strcasecmp(option_value, "GSSAPI") == 0) {
+			mechanism = MONGO_AUTH_MECHANISM_GSSAPI;
+		} else if (strcasecmp(option_value, "PLAIN") == 0) {
+			mechanism = MONGO_AUTH_MECHANISM_PLAIN;
+		} else {
+			int len = strlen(option_value) + sizeof("The authMechanism '' does not exist.");
 
-				/* Associate the given replica set name with all the server definitions from the seed */
-				for (i = 0; i < servers->count; i++) {
-					if (servers->server[i]->repl_set_name) {
-						free(servers->server[i]->repl_set_name);
-					}
-					servers->server[i]->repl_set_name = strdup(option_value);
-				}
-			} else {
-				mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'replicaSet': true");
-			}
-			servers->con_type = MONGO_CON_TYPE_REPLSET;
-			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Switching connection type: REPLSET");
+			*error_message = malloc(len + 1);
+			snprintf(*error_message, len, "The authMechanism '%s' does not exist.", option_value);
+			return 3;
 		}
-		return 0;
-	}
-	if (strcasecmp(option_name, "username") == 0) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'username': '%s'", option_value);
 		for (i = 0; i < servers->count; i++) {
-			if (servers->server[i]->username) {
-				free(servers->server[i]->username);
-			}
-			servers->server[i]->username = strdup(option_value);
+			servers->server[i]->mechanism = mechanism;
 		}
 		return 0;
 	}
+
+	if (strcasecmp(option_name, "authSource") == 0) {
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'authSource': '%s'", option_value);
+		for (i = 0; i < servers->count; i++) {
+			if (servers->server[i]->authdb) {
+				free(servers->server[i]->authdb);
+			}
+			servers->server[i]->authdb = strdup(option_value);
+		}
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "connectTimeoutMS") == 0) {
+		int value = atoi(option_value);
+
+		if (servers->options.connectTimeoutMS) {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Replacing previously set value for 'connectTimeoutMS' (%d)", servers->options.connectTimeoutMS);
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'connectTimeoutMS': %d", value);
+		servers->options.connectTimeoutMS = value;
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "db") == 0) {
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'db': '%s'", option_value);
+		for (i = 0; i < servers->count; i++) {
+			if (servers->server[i]->db) {
+				free(servers->server[i]->db);
+				/* Free the authdb too as it defaulted to 'admin' when no db was passed as the connection string */
+				free(servers->server[i]->authdb);
+				servers->server[i]->authdb = NULL;
+			}
+			servers->server[i]->db = strdup(option_value);
+		}
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "fsync") == 0) {
+		if (strcasecmp(option_value, "true") == 0 || strcmp(option_value, "1") == 0) {
+			servers->options.default_fsync = 1;
+		} else {
+			servers->options.default_fsync = 0;
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'fsync': %d", servers->options.default_fsync);
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "journal") == 0) {
+		if (strcasecmp(option_value, "true") == 0 || strcmp(option_value, "1") == 0) {
+			servers->options.default_journal = 1;
+		} else {
+			servers->options.default_journal = 0;
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'journal': %d", servers->options.default_journal);
+		return 0;
+	}
+
 	if (strcasecmp(option_name, "password") == 0) {
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'password': '%s'", option_value);
 		for (i = 0; i < servers->count; i++) {
@@ -346,35 +429,7 @@ int mongo_store_option(mongo_con_manager *manager, mongo_servers *servers, char 
 		}
 		return 0;
 	}
-	if (strcasecmp(option_name, "db") == 0) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'db': '%s'", option_value);
-		for (i = 0; i < servers->count; i++) {
-			if (servers->server[i]->db) {
-				free(servers->server[i]->db);
-			}
-			servers->server[i]->db = strdup(option_value);
-		}
-		return 0;
-	}
-	if (strcasecmp(option_name, "slaveOkay") == 0) {
-		if (strcasecmp(option_value, "true") == 0 || *option_value == '1') {
-			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'slaveOkay': true");
-			if (servers->read_pref.type != MONGO_RP_PRIMARY || servers->read_pref.tagset_count) {
-				/* the server already has read preferences configured, but we're still
-				 * trying to set slave okay. The spec says that's an error */
-				*error_message = strdup("You can not use both slaveOkay and read-preferences. Please switch to read-preferences.");
-				return 3;
-			} else {
-				/* Old style option, that needs to be removed. For now, spec dictates
-				 * it needs to be ReadPreference=SECONDARY_PREFERRED */
-				servers->read_pref.type = MONGO_RP_SECONDARY_PREFERRED;
-			}
-			return 0;
-		}
 
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'slaveOkay': false");
-		return 0;
-	}
 	if (strcasecmp(option_name, "readPreference") == 0) {
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'readPreference': '%s'", option_value);
 		if (strcasecmp(option_value, "primary") == 0) {
@@ -396,55 +451,192 @@ int mongo_store_option(mongo_con_manager *manager, mongo_servers *servers, char 
 		}
 		return 0;
 	}
+
 	if (strcasecmp(option_name, "readPreferenceTags") == 0) {
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'readPreferenceTags': '%s'", option_value);
 		return parse_read_preference_tags(manager, servers, option_value, error_message);
 	}
 
-	if (strcasecmp(option_name, "timeout") == 0) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'timeout': %d", atoi(option_value));
-		servers->connectTimeoutMS = atoi(option_value);
-		return 0;
-	}
-#if 0
-	if (strcasecmp(option_name, "fireAndForget") == 0) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'fireAndForget': %s", option_value);
-		if (strcmp(option_value, "true") == 0) {
-			servers->default_do_gle = 1;
-		} else if (strcmp(option_value, "false") == 0) {
-			servers->default_do_gle = 0;
-		} else {
-			*error_message = strdup("The value of 'fireAndForget' needs to be either 'true' or 'false'");
-			return 3;
+	if (strcasecmp(option_name, "replicaSet") == 0) {
+		if (servers->options.repl_set_name) {
+			/* Free the already existing one */
+			free(servers->options.repl_set_name);
+			servers->options.repl_set_name = NULL; /* We reset it as not all options set a string as replset name */
+		}
+
+		if (option_value && *option_value) {
+			/* We explicitly check for the stringified version of "true" here,
+			 * as "true" has a special meaning. It does not mean that the
+			 * replicaSet name is "1". */
+			if (strcmp(option_value, "1") != 0) {
+				servers->options.repl_set_name = strdup(option_value);
+				mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'replicaSet': '%s'", option_value);
+
+				/* Associate the given replica set name with all the server
+				 * definitions from the seed */
+				for (i = 0; i < servers->count; i++) {
+					if (servers->server[i]->repl_set_name) {
+						free(servers->server[i]->repl_set_name);
+					}
+					servers->server[i]->repl_set_name = strdup(option_value);
+				}
+			} else {
+				mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Found option 'replicaSet': true - Expected the name of the replica set");
+			}
+			servers->options.con_type = MONGO_CON_TYPE_REPLSET;
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Switching connection type: REPLSET");
 		}
 		return 0;
 	}
-#endif
+
+	if (strcasecmp(option_name, "gssapiServiceName") == 0) {
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'gssapiServiceName': '%s'", option_value);
+		free(servers->options.gssapiServiceName);
+		servers->options.gssapiServiceName = strdup(option_value);
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "secondaryAcceptableLatencyMS") == 0) {
+		int value = atoi(option_value);
+
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'secondaryAcceptableLatencyMS': '%s'", option_value);
+		servers->options.secondaryAcceptableLatencyMS = value;
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "slaveOkay") == 0) {
+		if (strcasecmp(option_value, "true") == 0 || strcmp(option_value, "1") == 0) {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'slaveOkay': true");
+			if (servers->read_pref.type != MONGO_RP_PRIMARY || servers->read_pref.tagset_count) {
+				/* The server already has read preferences configured, but
+				 * we're still trying to set slave okay. The spec says that's
+				 * an error */
+				*error_message = strdup("You can not use both slaveOkay and read-preferences. Please switch to read-preferences.");
+				return 3;
+			} else {
+				/* Old style option, that needs to be removed. For now, spec
+				 * dictates it needs to be ReadPreference=SECONDARY_PREFERRED */
+				servers->read_pref.type = MONGO_RP_SECONDARY_PREFERRED;
+			}
+			return -1;
+		}
+
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'slaveOkay': false");
+		return -1;
+	}
+
+	if (strcasecmp(option_name, "socketTimeoutMS") == 0) {
+		int value = atoi(option_value);
+
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'socketTimeoutMS': %d", value);
+		servers->options.socketTimeoutMS = value;
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "ssl") == 0) {
+		int value = 0;
+		if (strcasecmp(option_value, "true") == 0 || strcmp(option_value, "1") == 0) {
+			value = MONGO_SSL_ENABLE;
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'ssl': true");
+		} else if (strcasecmp(option_value, "false") == 0 || strcmp(option_value, "0") == 0) {
+			value = MONGO_SSL_DISABLE;
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'ssl': false");
+		} else if (strcasecmp(option_value, "prefer") == 0 || atoi(option_value) == MONGO_SSL_PREFER) {
+			/* FIXME: MongoDB doesn't support "connection promotion" to SSL at
+			 * the moment, so we can't support this option properly */
+			value = MONGO_SSL_PREFER;
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'ssl': prefer");
+			*error_message = strdup("SSL=prefer is currently not supported by mongod");
+			return 3;
+		} else {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'ssl': '%s'", option_name);
+			*error_message = strdup("SSL can only be 'true' or 'false'");
+			return 3;
+		}
+
+		servers->options.ssl = value;
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "timeout") == 0) {
+		int value = atoi(option_value);
+
+		if (servers->options.connectTimeoutMS) {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Replacing previously set value for 'connectTimeoutMS' (%d)", servers->options.connectTimeoutMS);
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'timeout' ('connectTimeoutMS'): %d", value);
+		servers->options.connectTimeoutMS = value;
+		return -1;
+	}
+
+	if (strcasecmp(option_name, "username") == 0) {
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'username': '%s'", option_value);
+		for (i = 0; i < servers->count; i++) {
+			if (servers->server[i]->username) {
+				free(servers->server[i]->username);
+			}
+			servers->server[i]->username = strdup(option_value);
+			/* Use "admin" as the default db if none selected yet. It is okay
+			 * if it is set in a later option, as we first always free the
+			 * value before setting it anyway. */
+			if (!servers->server[i]->db) {
+				servers->server[i]->db = strdup("admin");
+				/* Admin users always authenticate on the admin db, even when
+				 * using other databases */
+				servers->server[i]->authdb = strdup("admin");
+			}
+		}
+		return 0;
+	}
+
 	if (strcasecmp(option_name, "w") == 0) {
 		/* Rough check to see whether this is a numeric string or not */
-		if ((option_value[0] >= '0' && option_value[0] <= '9') || option_value[0] == '-') {
-			servers->default_w = atoi(option_value);
-			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'w': %d", servers->default_w);
-			if (servers->default_w < 1) {
-				*error_message = strdup("The value of 'w' needs to be 1 or higher (or a string).");
+		char *endptr;
+		long tmp_value;
+		
+		tmp_value = strtol(option_value, &endptr, 10);
+		/* If no invalid character is found (endptr == 0), we consider the
+		 * option value as a number */
+		if (!*endptr) {
+			servers->options.default_w = tmp_value;
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'w': %d", servers->options.default_w);
+			if (servers->options.default_w < 0) {
+				*error_message = strdup("The value of 'w' needs to be 0 or higher (or a string).");
 				return 3;
 			}
 		} else {
-			servers->default_wstring = strdup(option_value);
-			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'w': '%s'", servers->default_wstring);
+			servers->options.default_w = 1;
+			servers->options.default_wstring = strdup(option_value);
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'w': '%s'", servers->options.default_wstring);
 		}
 		return 0;
 	}
 
 	if (strcasecmp(option_name, "wTimeout") == 0) {
-		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'wTimeout': %d", atoi(option_value));
-		servers->default_wtimeout = atoi(option_value);
+		int value = atoi(option_value);
+
+		if (servers->options.default_wtimeout != -1) {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Replacing previously set value for 'wTimeoutMS' (%d)", servers->options.default_wtimeout);
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'wTimeout' ('wTimeoutMS'): %d", value);
+		servers->options.default_wtimeout = value;
+		return 0;
+	}
+
+	if (strcasecmp(option_name, "wTimeoutMS") == 0) {
+		int value = atoi(option_value);
+
+		if (servers->options.default_wtimeout != -1) {
+			mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Replacing previously set value for 'wTimeoutMS' (%d)", servers->options.default_wtimeout);
+		}
+		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'wTimeoutMS': %d", value);
+		servers->options.default_wtimeout = value;
 		return 0;
 	}
 
 	*error_message = malloc(256);
 	snprintf(*error_message, 256, "- Found unknown connection string option '%s' with value '%s'", option_name, option_value);
-	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found unknown connection string option '%s' with value '%s'", option_name, option_value);
+	mongo_manager_log(manager, MLOG_PARSE, MLOG_WARN, "- Found unknown connection string option '%s' with value '%s'", option_name, option_value);
 	return 2;
 }
 
@@ -464,9 +656,9 @@ int static mongo_parse_options(mongo_con_manager *manager, mongo_servers *server
 		}
 		if (*pos == ';' || *pos == '&') {
 			retval = mongo_process_option(manager, servers, name_start, value_start, pos, error_message);
-			/* An empty name/value isn't an error */
-			if (retval > 1) {
-				return 1;
+
+			if (retval > 0) {
+				return retval;
 			}
 			name_start = pos + 1;
 			value_start = NULL;
@@ -475,15 +667,14 @@ int static mongo_parse_options(mongo_con_manager *manager, mongo_servers *server
 	} while (*pos != '\0');
 	retval = mongo_process_option(manager, servers, name_start, value_start, pos, error_message);
 
-	/* An empty name/value isn't an error */
-	return retval > 1 ? 1 : 0;
+	return retval;
 }
 
 void static mongo_server_def_dump(mongo_con_manager *manager, mongo_server_def *server_def)
 {
 	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO,
-		"- host: %s; port: %d; username: %s, password: %s, database: %s",
-		server_def->host, server_def->port, server_def->username, server_def->password, server_def->db);
+		"- host: %s; port: %d; username: %s, password: %s, database: %s, auth source: %s, mechanism: %d",
+		server_def->host, server_def->port, server_def->username, server_def->password, server_def->db, server_def->authdb, server_def->mechanism);
 }
 
 void mongo_servers_dump(mongo_con_manager *manager, mongo_servers *servers)
@@ -497,7 +688,7 @@ void mongo_servers_dump(mongo_con_manager *manager, mongo_servers *servers)
 	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "");
 
 	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "Options:");
-	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- repl_set_name: %s", servers->repl_set_name);
+	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- repl_set_name: %s", servers->options.repl_set_name);
 	mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- readPreference: %s", mongo_read_preference_type_to_name(servers->read_pref.type));
 	for (i = 0; i < servers->read_pref.tagset_count; i++) {
 		char *tmp = mongo_read_preference_squash_tagset(servers->read_pref.tagsets[i]);
@@ -510,15 +701,22 @@ void mongo_servers_dump(mongo_con_manager *manager, mongo_servers *servers)
 /* Cloning */
 static void mongo_server_def_copy(mongo_server_def *to, mongo_server_def *from, int flags)
 {
-	to->host = to->db = to->username = to->password = NULL;
+	to->host = to->repl_set_name = to->db = to->authdb = to->username = to->password = NULL;
+	to->mechanism = MONGO_AUTH_MECHANISM_MONGODB_CR;
 	if (from->host) {
 		to->host = strdup(from->host);
 	}
 	to->port = from->port;
+	if (from->repl_set_name) {
+		to->repl_set_name = strdup(from->repl_set_name);
+	}
 
 	if (flags & MONGO_SERVER_COPY_CREDENTIALS) {
 		if (from->db) {
 			to->db = strdup(from->db);
+		}
+		if (from->authdb) {
+			to->authdb = strdup(from->authdb);
 		}
 		if (from->username) {
 			to->username = strdup(from->username);
@@ -526,6 +724,7 @@ static void mongo_server_def_copy(mongo_server_def *to, mongo_server_def *from, 
 		if (from->password) {
 			to->password = strdup(from->password);
 		}
+		to->mechanism = from->mechanism;
 	}
 }
 
@@ -535,24 +734,33 @@ void mongo_servers_copy(mongo_servers *to, mongo_servers *from, int flags)
 
 	to->count = from->count;
 	for (i = 0; i < from->count; i++) {
-		to->server[i] = malloc(sizeof(mongo_server_def));
+		to->server[i] = calloc(1, sizeof(mongo_server_def));
 		mongo_server_def_copy(to->server[i], from->server[i], flags);
 	}
 
-	to->con_type = from->con_type;
+	to->options.con_type = from->options.con_type;
 
-	if (from->repl_set_name) {
-		to->repl_set_name = strdup(from->repl_set_name);
+	if (from->options.repl_set_name) {
+		to->options.repl_set_name = strdup(from->options.repl_set_name);
 	}
-	to->repl_set_name = NULL;
+	if (from->options.gssapiServiceName) {
+		to->options.gssapiServiceName = strdup(from->options.gssapiServiceName);
+	}
 
-	to->connectTimeoutMS = from->connectTimeoutMS;
+	to->options.secondaryAcceptableLatencyMS = from->options.secondaryAcceptableLatencyMS;
 
-	to->default_do_gle = from->default_do_gle;
-	to->default_w = from->default_w;
-	to->default_wtimeout = from->default_wtimeout;
-	if (from->default_wstring) {
-		to->default_wstring = strdup(from->default_wstring);
+	to->options.default_w = from->options.default_w;
+	to->options.default_wtimeout = from->options.default_wtimeout;
+	if (from->options.default_wstring) {
+		to->options.default_wstring = strdup(from->options.default_wstring);
+	}
+	to->options.default_fsync = from->options.default_fsync;
+	to->options.default_journal = from->options.default_journal;
+
+	to->options.ssl = from->options.ssl;
+
+	if (from->options.ctx) {
+		memcpy(to->options.ctx, from->options.ctx, sizeof(void *));
 	}
 
 	mongo_read_preference_copy(&from->read_pref, &to->read_pref);
@@ -570,6 +778,9 @@ void mongo_server_def_dtor(mongo_server_def *server_def)
 	if (server_def->db) {
 		free(server_def->db);
 	}
+	if (server_def->authdb) {
+		free(server_def->authdb);
+	}
 	if (server_def->username) {
 		free(server_def->username);
 	}
@@ -586,11 +797,14 @@ void mongo_servers_dtor(mongo_servers *servers)
 	for (i = 0; i < servers->count; i++) {
 		mongo_server_def_dtor(servers->server[i]);
 	}
-	if (servers->repl_set_name) {
-		free(servers->repl_set_name);
+	if (servers->options.repl_set_name) {
+		free(servers->options.repl_set_name);
 	}
-	if (servers->default_wstring) {
-		free(servers->default_wstring);
+	if (servers->options.gssapiServiceName) {
+		free(servers->options.gssapiServiceName);
+	}
+	if (servers->options.default_wstring) {
+		free(servers->options.default_wstring);
 	}
 	for (i = 0; i < servers->read_pref.tagset_count; i++) {
 		mongo_read_preference_tagset_dtor(servers->read_pref.tagsets[i]);
@@ -600,3 +814,12 @@ void mongo_servers_dtor(mongo_servers *servers)
 	}
 	free(servers);
 }
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: fdm=marker
+ * vim: noet sw=4 ts=4
+ */

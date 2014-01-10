@@ -1,19 +1,19 @@
 --TEST--
 Test for PHP-473: Sort by field "0" (zero char, ASCII 0x30) does not work.
 --SKIPIF--
-<?php require_once dirname(__FILE__) . "/skipif.inc" ?>
+<?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
+require_once "tests/utils/server.inc";
 
-$m = mongo();
+$m = mongo_standalone();
 
 $db = $m->selectDB(dbname());
 $coll = $db->test_sort;
 $coll->drop();
 // insert test data
 for ($i=0; $i<10; $i++) {
-    $coll->insert(array('0' => 'a' . $i, '1' => 'b' . $i, '2' => 'c' . $i), array('safe' => true));
+    $coll->insert(array('0' => 'a' . $i, '1' => 'b' . $i, '2' => 'c' . $i), array('w' => true));
 }
 
 // ask user on which 'column' to sort

@@ -1,12 +1,12 @@
 --TEST--
 Test for PHP-333: GridFS find's key.
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) ."/../utils.inc";
+require_once "tests/utils/server.inc";
 $db_name = dbname();
-$m = mongo();
+$m = mongo_standalone();
 $mdb = $m->selectDB($db_name);
 $mdb->dropCollection("fs.files");
 $mdb->dropCollection("fs.chunks");
@@ -17,7 +17,7 @@ $temporary_file_name = '/tmp/GridFS_test.txt';
 $temporary_file_data = '1234567890';
 file_put_contents($temporary_file_name, $temporary_file_data);
 
-$options = array( 'safe' => false );
+$options = array( 'w' => false );
 for ($i = 0; $i < 3; $i++) {
 	try {
 		$new_saved_file_object_id = $GridFS->storeFile($temporary_file_name, array( '_id' => "file{$i}", "filename" => "file.txt"), $options);

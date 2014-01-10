@@ -1,18 +1,19 @@
 --TEST--
 MongoDB::getGridFS() with invalid prefix
 --SKIPIF--
-<?php require dirname(__FILE__) . "/skipif.inc";?>
+<?php require "tests/utils/standalone.inc";?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$mongo = mongo();
+require_once "tests/utils/server.inc";
+$mongo = mongo_standalone();
 $db = $mongo->selectDB(dbname());
 
 try {
     $db->getGridFS(null);
     var_dump(false);
 } catch (Exception $e) {
-    var_dump(true);
+    var_dump($e->getMessage(), $e->getCode());
 }
 --EXPECT--
-bool(true)
+string(42) "MongoGridFS::__construct(): invalid prefix"
+int(2)

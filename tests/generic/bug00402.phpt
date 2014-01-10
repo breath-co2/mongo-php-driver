@@ -5,15 +5,15 @@ This test skips mongos because its validate() results contain only a top-level
 "validate" field, which collects the shard results, and grouped results for each
 shard in a "raw" array field.
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 <?php require_once dirname(__FILE__) . '/skipif_mongos.inc'; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) ."/../utils.inc";
+require_once "tests/utils/server.inc";
 
-$m = mongo();
+$m = mongo_standalone();
 $c = $m->selectCollection('phpunit', 'col');
-$c->insert(array('x' => 1), array('safe' => true));
+$c->insert(array('x' => 1), array('w' => true));
 
 $result = $c->validate();
 var_dump(isset($result['warning']));
@@ -23,15 +23,13 @@ $result = $c->validate(true);
 var_dump(isset($result['warning']));
 
 $c->drop();
-var_dump($c->validate());;
+$res = $c->validate();
+var_dump($res["ok"], $res["errmsg"]);
 ?>
 --EXPECT--
 bool(true)
 string(79) "Some checks omitted for speed. use {full:true} option to do more thorough scan."
 bool(false)
-array(2) {
-  ["errmsg"]=>
-  string(12) "ns not found"
-  ["ok"]=>
-  float(0)
-}
+float(0)
+string(12) "ns not found"
+

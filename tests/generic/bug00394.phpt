@@ -1,12 +1,12 @@
 --TEST--
 Test for PHP-394: Crashes and mem leaks.
 --SKIPIF--
-<?php require_once dirname(__FILE__) . "/skipif.inc" ?>
+<?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
+require_once "tests/utils/server.inc";
 
-$x = new Mongo(array());
+$x = new MongoClient(array());
 var_dump($x);
 if ($x) {
     $x->connect();
@@ -45,7 +45,7 @@ if ($x) {
 ?>
 --EXPECTF--
 
-Warning: Mongo::__construct() expects parameter 1 to be string, array given in %s on line %d
+Warning: MongoClient::__construct() expects parameter 1 to be string, array given in %s on line %d
 NULL
 
 Warning: MongoDB::__construct() expects exactly 2 parameters, 0 given in %s on line %d

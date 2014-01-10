@@ -1,3 +1,18 @@
+/**
+ *  Copyright 2009-2013 10gen, Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,10 +41,9 @@ char *mongo_server_create_hashed_password(char *username, char *password)
 }
 
 /* Hash format is:
- * - HOST:PORT;-;X;PID (with the - being the replica set name and the X a placeholder for credentials)
+ * - HOST:PORT;-;.;PID (with the - being the replica set name and the . a placeholder for credentials)
  * or:
- * - HOST:PORT;REPLSETNAME;DB/USERNAME/md5(PID,PASSWORD,USERNAME);PID
- */
+ * - HOST:PORT;REPLSETNAME;DB/USERNAME/md5(PID,PASSWORD,USERNAME);PID */
 
 /* Creates a unique hash for a server def with some info from the server config,
  * but also with the PID to make sure forking works */
@@ -67,7 +81,7 @@ char *mongo_server_create_hash(mongo_server_def *server_def)
 		sprintf(tmp + strlen(tmp), "%s/%s/%s;", server_def->db, server_def->username, hash);
 		free(hash);
 	} else {
-		sprintf(tmp + strlen(tmp), "X;");
+		sprintf(tmp + strlen(tmp), ".;");
 	}
 	sprintf(tmp + strlen(tmp), "%d", getpid());
 
@@ -106,7 +120,7 @@ int mongo_server_split_hash(char *hash, char **host, int *port, char **repl_set_
 
 	/* Find the database and username */
 	ptr = strchr(ptr, ';') + 1;
-	if (ptr[0] != 'X') {
+	if (ptr[0] != '.') {
 		if (database) {
 			*database = mcon_strndup(ptr, strchr(ptr, '/') - ptr);
 		}
@@ -159,9 +173,18 @@ int mongo_server_hash_to_pid(char *hash)
 }
 
 /* Forward declaration for the MD5 algorithm */
-void MD5_Init(MD5_CTX *ctx);
-void MD5_Update(MD5_CTX *ctx, void *data, unsigned long size);
-void MD5_Final(unsigned char *result, MD5_CTX *ctx);
+typedef unsigned int MD5_u32plus;
+ 
+typedef struct {
+	MD5_u32plus lo, hi;
+	MD5_u32plus a, b, c, d;
+	unsigned char buffer[64];
+	MD5_u32plus block[16];
+} MD5_CTX;
+
+static void MD5_Init(MD5_CTX *ctx);
+static void MD5_Update(MD5_CTX *ctx, void *data, unsigned long size);
+static void MD5_Final(unsigned char *result, MD5_CTX *ctx);
 
 /* Convience function around the MD5 implementation */
 char *mongo_util_md5_hex(char *hash, int hash_length)
@@ -378,7 +401,7 @@ static void *body(MD5_CTX *ctx, void *data, unsigned long size)
 	return ptr;
 }
  
-void MD5_Init(MD5_CTX *ctx)
+static void MD5_Init(MD5_CTX *ctx)
 {
 	ctx->a = 0x67452301;
 	ctx->b = 0xefcdab89;
@@ -389,7 +412,7 @@ void MD5_Init(MD5_CTX *ctx)
 	ctx->hi = 0;
 }
  
-void MD5_Update(MD5_CTX *ctx, void *data, unsigned long size)
+static void MD5_Update(MD5_CTX *ctx, void *data, unsigned long size)
 {
 	MD5_u32plus saved_lo;
 	unsigned long used, free;
@@ -423,7 +446,7 @@ void MD5_Update(MD5_CTX *ctx, void *data, unsigned long size)
 	memcpy(ctx->buffer, data, size);
 }
  
-void MD5_Final(unsigned char *result, MD5_CTX *ctx)
+static void MD5_Final(unsigned char *result, MD5_CTX *ctx)
 {
 	unsigned long used, free;
  
@@ -474,15 +497,59 @@ void MD5_Final(unsigned char *result, MD5_CTX *ctx)
 	memset(ctx, 0, sizeof(*ctx));
 }
 
-#ifdef WIN32
-/* Compat stuff for Windows */
-char *mcon_strndup(char *str, size_t len)
+/*
+ * Copyright (c) 1988, 1993
+ *      The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/* Compat function for systems that do not have strndup().
+ * This is borrowed from FreeBSD's strndup.c, with minor CS changes */
+char *mcon_strndup(char *str, size_t n)
 {
-    char *dup = (char *)malloc(len+1);
-    if (dup) {
-        strncpy(dup,str,len);
-        dup[len]= '\0';
-    }
-    return dup;
+	size_t len;
+	char *copy;
+
+	for (len = 0; len < n && str[len]; len++) {
+		continue;
+	}
+
+	if ((copy = malloc(len + 1)) == NULL) {
+		return NULL;
+	}
+	memcpy(copy, str, len);
+	copy[len] = '\0';
+	return copy;
 }
-#endif
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: fdm=marker
+ * vim: noet sw=4 ts=4
+ */

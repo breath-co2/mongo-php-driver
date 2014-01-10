@@ -1,11 +1,11 @@
 --TEST--
 Database: Create collection with max size
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$a = mongo();
+require_once "tests/utils/server.inc";
+$a = mongo_standalone();
 $d = $a->selectDb("phpunit");
 $ns = $d->selectCollection('system.namespaces');
 
@@ -17,7 +17,7 @@ var_dump($ns->findOne(array('name' => 'phpunit.create-col1')));
 // * even though we're only setting this to 100, it allocates 1 extent, so we
 //   can fit 4096, not 100, bytes of data in the collection.
 
-$c = $d->createCollection('create-col1', true, 100);
+$c = $d->createCollection('create-col1', array('size' => 100, 'capped' => true));
 var_dump($ns->findOne(array('name' => 'phpunit.create-col1')));
 
 // test cap

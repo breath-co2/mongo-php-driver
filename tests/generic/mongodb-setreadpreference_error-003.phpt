@@ -1,27 +1,20 @@
 --TEST--
-MongoDB::setReadPreference errors [4]
+MongoDB::setReadPreference() error setting tag sets for primary read preference mode
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/server.inc"; ?>
 <?php
-$host = hostname();
-$port = port();
-$db   = dbname();
 
-$baseString = sprintf("mongodb://%s:%d/%s", $host, $port, $db);
-
-$m = new mongo($baseString);
-$d = $m->$db;
-$d->setReadPreference(Mongo::RP_PRIMARY, array( array( 'foo' => 'bar' ) ) );
-$rp = $d->getReadPreference();
+$m = new_mongo_standalone();
+$db = $m->phpunit;
+$db->setReadPreference(MongoClient::RP_PRIMARY, array( array( 'foo' => 'bar' ) ) );
+$rp = $db->getReadPreference();
 var_dump($rp);
 ?>
 --EXPECTF--
-Warning: MongoDB::setReadPreference(): You can't use read preference tags with a read preference of PRIMARY in %smong%s-setreadpreference_error-003.php on line %d
-array(2) {
+Warning: MongoDB::setReadPreference(): You can't use read preference tags with a read preference of PRIMARY in %s on line %d
+array(1) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
 }

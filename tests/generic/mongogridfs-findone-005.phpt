@@ -1,11 +1,11 @@
 --TEST--
 MongoGridFS::findOne() with selected fields may omit file contents
 --SKIPIF--
-<?php require dirname(__FILE__) . "/skipif.inc";?>
+<?php require "tests/utils/standalone.inc";?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$mongo = mongo();
+require_once "tests/utils/server.inc";
+$mongo = mongo_standalone();
 $db = $mongo->selectDB(dbname());
 
 $gridfs = $db->getGridFS();
@@ -18,7 +18,8 @@ try {
     $file->getBytes();
     var_dump(false);
 } catch (MongoGridFSException $e) {
-    var_dump(true);
+    var_dump($e->getMessage(), $e->getCode());
 }
 --EXPECT--
-bool(true)
+string(23) "couldn't find file size"
+int(14)

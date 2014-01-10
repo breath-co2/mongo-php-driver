@@ -1,11 +1,11 @@
 --TEST--
 GridFS: Testing issues with chunks and reading too much
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$conn = mongo();
+require_once "tests/utils/server.inc";
+$conn = mongo_standalone();
 $db   = $conn->selectDb(dbname());
 $grid = $db->getGridFs('wrapper');
 
@@ -14,7 +14,7 @@ $grid->drop();
 
 // dummy file
 $bytes = str_repeat("x", 128);
-$grid->storeBytes($bytes, array("filename" => "demo.txt", 'chunkSize' => 128), array('safe' => true));
+$grid->storeBytes($bytes, array("filename" => "demo.txt", 'chunkSize' => 128), array('w' => true));
 unset($bytes);
 
 // fetch it

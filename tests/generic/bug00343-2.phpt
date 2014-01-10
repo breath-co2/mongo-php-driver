@@ -1,11 +1,11 @@
 --TEST--
 Test for PHP-343: Segfault when adding a file to GridFS (storeFile). (2)
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$m = mongo();
+require_once "tests/utils/server.inc";
+$m = new_mongo_standalone();
 $db = $m->phpunit;
 $db->dropCollection( 'phpunit' );
 $grid = $db->getGridFS();
@@ -17,7 +17,7 @@ $saved = $grid->storeFile(
 		'thumbnail_size' => 'm',
 		'otherdata' => 'BIG'
 	),
-	array('safe' => true)
+	array('w' => true)
 );
 var_dump( $grid->findOne() );
 echo "OK\n";

@@ -1,12 +1,12 @@
 --TEST--
 Database: Create collection with max size and items
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
+require_once "tests/utils/server.inc";
 
-$a = mongo();
+$a = mongo_standalone();
 $d = $a->selectDb("phpunit");
 
 // cleanup
@@ -16,13 +16,13 @@ $ns = $d->selectCollection('system.namespaces');
 var_dump($ns->findOne(array('name' => 'phpunit.createcol1')));
 
 // create
-$c = $d->createCollection('createcol1', true, 1000, 5);
+$c = $d->createCollection('createcol1', array('capped' => true, 'size' => 1000, 'max' => 5));
 $retval = $ns->findOne(array('name' => 'phpunit.createcol1'));
 var_dump($retval["name"]);
 
 // test cap
 for ($i = 0; $i < 10; $i++) {
-    $c->insert(array('x' => $i), array("safe" => true));
+    $c->insert(array('x' => $i), array("w" => true));
 }
 foreach($c->find() as $res) {
     var_dump($res["x"]);

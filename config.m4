@@ -3,16 +3,25 @@ PHP_ARG_ENABLE(mongo, whether to enable Mongo extension,
 
 PHP_MONGO_CFLAGS="-I@ext_builddir@/util"
 
+AC_DEFUN([MONGO_ADD_DIR], [
+  PHP_ADD_BUILD_DIR([$ext_builddir/$1], 1)
+  PHP_ADD_INCLUDE([$ext_builddir/$1])
+  PHP_ADD_INCLUDE([$ext_srcdir/$1])
+
+])
+
 if test "$PHP_MONGO" != "no"; then
   AC_DEFINE(HAVE_MONGO, 1, [Whether you have Mongo extension])
-  PHP_NEW_EXTENSION(mongo, php_mongo.c mongo.c mongo_types.c bson.c cursor.c collection.c db.c gridfs.c gridfs_stream.c util/hash.c util/log.c util/pool.c mcon/bson_helpers.c mcon/collection.c mcon/connections.c mcon/io.c mcon/manager.c mcon/mini_bson.c mcon/parse.c mcon/read_preference.c mcon/str.c mcon/utils.c, $ext_shared,, $PHP_MONGO_CFLAGS)
+  PHP_NEW_EXTENSION(mongo, php_mongo.c mongo.c mongoclient.c bson.c cursor.c collection.c db.c io_stream.c log_stream.c gridfs/gridfs.c gridfs/gridfs_cursor.c gridfs/gridfs_file.c gridfs/gridfs_stream.c exceptions/exception.c exceptions/connection_exception.c exceptions/duplicate_key_exception.c exceptions/cursor_exception.c exceptions/cursor_timeout_exception.c exceptions/gridfs_exception.c exceptions/result_exception.c exceptions/write_concern_exception.c types/bin_data.c types/code.c types/date.c types/db_ref.c types/id.c types/int32.c types/int64.c types/regex.c types/timestamp.c util/log.c util/pool.c mcon/bson_helpers.c mcon/collection.c mcon/connections.c mcon/io.c mcon/manager.c mcon/mini_bson.c mcon/parse.c mcon/read_preference.c mcon/str.c mcon/utils.c api/wire_version.c, $ext_shared,, $PHP_MONGO_CFLAGS)
 
-  PHP_ADD_BUILD_DIR([$ext_builddir/util], 1)
-  PHP_ADD_INCLUDE([$ext_builddir/util])
-  PHP_ADD_INCLUDE([$ext_srcdir/util])
-  PHP_ADD_BUILD_DIR([$ext_builddir/mcon], 1)
-  PHP_ADD_INCLUDE([$ext_builddir/mcon])
-  PHP_ADD_INCLUDE([$ext_srcdir/mcon])
+  MONGO_ADD_DIR(api)
+  MONGO_ADD_DIR(util)
+  MONGO_ADD_DIR(exceptions)
+  MONGO_ADD_DIR(gridfs)
+  MONGO_ADD_DIR(types)
+  MONGO_ADD_DIR(mcon)
+
+  PHP_ADD_MAKEFILE_FRAGMENT([$ext_srcdir/Makefile.servers])
 
   dnl call acinclude func to check endian-ness
   PHP_C_BIGENDIAN
@@ -102,3 +111,40 @@ if test "$PHP_COVERAGE" = "yes"; then
   CXXFLAGS="$CXXFLAGS -O0 -fprofile-arcs -ftest-coverage"
 fi
 
+PHP_ARG_ENABLE(mongo-streams,  Build with PHP streams support,
+[  --disable-mongo-streams   Mongo: Build with PHP streams wrapper support], yes, no)
+
+if test "$PHP_MONGO_STREAMS" = "yes"; then
+  AC_DEFINE(MONGO_PHP_STREAMS, 1, [Make PHP MongoDB use PHP streams])
+fi
+
+PHP_ARG_WITH(mongo-sasl, Build with Cyrus SASL support,
+[  --with-mongo-sasl[=DIR]     Mongo: Include Cyrus SASL support], no, no)
+
+if test "$PHP_MONGO_SASL" != "no"; then
+  AC_MSG_CHECKING(for SASL)
+  for i in $PHP_MONGO_SASL /usr /usr/local; do
+    if test -f $i/include/sasl/sasl.h; then
+      MONGO_SASL_DIR=$i
+      AC_MSG_RESULT(found in $i)
+      break
+    fi
+  done
+
+  if test -z "$MONGO_SASL_DIR"; then
+    AC_MSG_RESULT(not found)
+    AC_MSG_ERROR([sasl.h not found!])
+  fi
+
+  PHP_CHECK_LIBRARY(sasl2, sasl_version,
+  [
+    PHP_ADD_INCLUDE($MONGO_SASL_DIR)
+    PHP_ADD_LIBRARY_WITH_PATH(sasl2, $MONGO_SASL_DIR/$PHP_LIBDIR, MONGO_SHARED_LIBADD)
+    AC_DEFINE(HAVE_MONGO_SASL, 1, [MONGO SASL support])
+  ], [
+    AC_MSG_ERROR([MONGO SASL check failed. Please check config.log for more information.])
+  ], [
+    -L$MONGO_SASL_DIR/$PHP_LIBDIR
+  ])
+  PHP_SUBST(MONGO_SHARED_LIBADD)
+fi

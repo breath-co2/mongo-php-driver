@@ -1,5 +1,5 @@
 /**
- *  Copyright 2009-2011 10gen, Inc.
+ *  Copyright 2009-2013 10gen, Inc.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ static zend_function_entry MongoPool_methods[] = {
 	PHP_ME(MongoPool, info, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC|ZEND_ACC_DEPRECATED)
 	PHP_ME(MongoPool, setSize, arginfo_setPoolSize, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC|ZEND_ACC_DEPRECATED)
 	PHP_ME(MongoPool, getSize, NULL, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC|ZEND_ACC_DEPRECATED)
-	{NULL, NULL, NULL}
+	PHP_FE_END
 };
 
 void mongo_init_MongoPool(TSRMLS_D) {
@@ -63,3 +63,12 @@ PHP_METHOD(Mongo, poolDebug) {
 	array_init(return_value);
 }
 
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: fdm=marker
+ * vim: noet sw=4 ts=4
+ */

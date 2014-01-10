@@ -1,5 +1,5 @@
 /**
- *  Copyright 2009-2011 10gen, Inc.
+ *  Copyright 2009-2013 10gen, Inc.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -14,41 +14,30 @@
  *  limitations under the License.
  */
 
-#ifndef MONGO_H
-#define MONGO_H
-
-int php_mongo_create_le(mongo_cursor *cursor, char *name TSRMLS_DC);
+#ifndef __MONGO_H__
+#define __MONGO_H__
 
 void mongo_init_Mongo(TSRMLS_D);
 
-/*
- * Mongo class
- */
+/* Mongo class */
 PHP_METHOD(Mongo, __construct);
-PHP_METHOD(Mongo, getConnections);
-PHP_METHOD(Mongo, connect);
-PHP_METHOD(Mongo, pairConnect);
-PHP_METHOD(Mongo, persistConnect);
-PHP_METHOD(Mongo, pairPersistConnect);
 PHP_METHOD(Mongo, connectUtil);
-PHP_METHOD(Mongo, __toString);
-PHP_METHOD(Mongo, __get);
-PHP_METHOD(Mongo, selectDB);
-PHP_METHOD(Mongo, selectCollection);
 PHP_METHOD(Mongo, getSlaveOkay);
 PHP_METHOD(Mongo, setSlaveOkay);
-PHP_METHOD(Mongo, getReadPreference);
-PHP_METHOD(Mongo, setReadPreference);
-PHP_METHOD(Mongo, dropDB);
 PHP_METHOD(Mongo, lastError);
 PHP_METHOD(Mongo, prevError);
 PHP_METHOD(Mongo, resetError);
 PHP_METHOD(Mongo, forceError);
-PHP_METHOD(Mongo, close);
-PHP_METHOD(Mongo, listDBs);
-PHP_METHOD(Mongo, getHosts);
 PHP_METHOD(Mongo, getSlave);
 PHP_METHOD(Mongo, switchSlave);
 
 #endif
 
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: fdm=marker
+ * vim: noet sw=4 ts=4
+ */

@@ -1,12 +1,12 @@
 --TEST--
 Test for PHP-486: GridFS cleanup routines remove existing files.
 --SKIPIF--
-<?php require_once dirname(__FILE__) . "/skipif.inc" ?>
+<?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$m = mongo();
-$db = $m->selectDB("examples");
+require_once "tests/utils/server.inc";
+$m = mongo_standalone();
+$db = $m->selectDB(dbname());
 
 $gridfs = $db->getGridFS();
 $gridfs->drop();
@@ -29,5 +29,5 @@ $gridfs->drop();
 ?>
 --EXPECTF--
 string(11) "./README.md"
-string(%d) "Could not store file: %s:%d: E11000 duplicate key error index: %s.fs.chunks.$files_id_1_n_1  dup key: { : 1, : 0 }"
+string(%d) "Could not store file:%sE11000 duplicate key error index: %s.fs.chunks.$files_id_1_n_1  dup key: { : 1, : 0 }"
 string(11) "./README.md"

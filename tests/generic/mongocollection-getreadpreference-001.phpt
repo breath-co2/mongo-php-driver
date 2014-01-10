@@ -1,84 +1,71 @@
 --TEST--
-MongoCollection::getReadPreference [1]
+MongoCollection::getReadPreference() returns read preferences
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/server.inc"; ?>
 <?php
-$host = hostname();
-$port = port();
-$db   = dbname();
 
-$baseString = sprintf("mongodb://%s:%d/%s?readPreference=", $host, $port, $db);
+$baseString = sprintf("mongodb://%s:%d/%s?readPreference=", standalone_hostname(), standalone_port(), dbname());
 
-$a = array(
-	'primary',
-	'secondary',
+$modes = array(
+    'primary',
+    'secondary',
 );
 
-$b = array(
-	'',
-	'&readPreferenceTags=dc:west',
-	'&readPreferenceTags=dc:west,use:reporting',
-	'&readPreferenceTags=',
-	'&readPreferenceTags=dc:west,use:reporting&readPreferenceTags=dc:east',
+$tagParams = array(
+    '',
+    '&readPreferenceTags=dc:west',
+    '&readPreferenceTags=dc:west,use:reporting',
+    '&readPreferenceTags=',
+    '&readPreferenceTags=dc:west,use:reporting&readPreferenceTags=dc:east',
 );
 
-foreach ($a as $value) {
-	foreach ($b as $tags) {
-		$m = new mongo($baseString . $value . $tags, array( 'connect' => false ) );
-		$d = $m->phpunit;
-		$c = $d->test;
-		$rp = $c->getReadPreference();
-		var_dump($rp);
-		echo "---\n";
-	}
+foreach ($modes as $mode) {
+    foreach ($tagParams as $tagParam) {
+        $m = new MongoClient($baseString . $mode . $tagParam, array('connect' => false));
+        $rp = $m->phpunit->test->getReadPreference();
+        var_dump($rp);
+        echo "---\n";
+    }
 }
 ?>
 --EXPECT--
-array(2) {
+array(1) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
   ["tagsets"]=>
   array(1) {
     [0]=>
     array(1) {
-      [0]=>
-      string(7) "dc:west"
+      ["dc"]=>
+      string(4) "west"
     }
   }
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
   ["tagsets"]=>
   array(1) {
     [0]=>
     array(2) {
-      [0]=>
-      string(7) "dc:west"
-      [1]=>
-      string(13) "use:reporting"
+      ["dc"]=>
+      string(4) "west"
+      ["use"]=>
+      string(9) "reporting"
     }
   }
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
   ["tagsets"]=>
   array(1) {
@@ -88,71 +75,61 @@ array(3) {
   }
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(0)
-  ["type_string"]=>
   string(7) "primary"
   ["tagsets"]=>
   array(2) {
     [0]=>
     array(2) {
-      [0]=>
-      string(7) "dc:west"
-      [1]=>
-      string(13) "use:reporting"
+      ["dc"]=>
+      string(4) "west"
+      ["use"]=>
+      string(9) "reporting"
     }
     [1]=>
     array(1) {
-      [0]=>
-      string(7) "dc:east"
+      ["dc"]=>
+      string(4) "east"
+    }
+  }
+}
+---
+array(1) {
+  ["type"]=>
+  string(9) "secondary"
+}
+---
+array(2) {
+  ["type"]=>
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(1) {
+    [0]=>
+    array(1) {
+      ["dc"]=>
+      string(4) "west"
     }
   }
 }
 ---
 array(2) {
   ["type"]=>
-  int(2)
-  ["type_string"]=>
-  string(9) "secondary"
-}
----
-array(3) {
-  ["type"]=>
-  int(2)
-  ["type_string"]=>
-  string(9) "secondary"
-  ["tagsets"]=>
-  array(1) {
-    [0]=>
-    array(1) {
-      [0]=>
-      string(7) "dc:west"
-    }
-  }
-}
----
-array(3) {
-  ["type"]=>
-  int(2)
-  ["type_string"]=>
   string(9) "secondary"
   ["tagsets"]=>
   array(1) {
     [0]=>
     array(2) {
-      [0]=>
-      string(7) "dc:west"
-      [1]=>
-      string(13) "use:reporting"
+      ["dc"]=>
+      string(4) "west"
+      ["use"]=>
+      string(9) "reporting"
     }
   }
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(2)
-  ["type_string"]=>
   string(9) "secondary"
   ["tagsets"]=>
   array(1) {
@@ -162,24 +139,22 @@ array(3) {
   }
 }
 ---
-array(3) {
+array(2) {
   ["type"]=>
-  int(2)
-  ["type_string"]=>
   string(9) "secondary"
   ["tagsets"]=>
   array(2) {
     [0]=>
     array(2) {
-      [0]=>
-      string(7) "dc:west"
-      [1]=>
-      string(13) "use:reporting"
+      ["dc"]=>
+      string(4) "west"
+      ["use"]=>
+      string(9) "reporting"
     }
     [1]=>
     array(1) {
-      [0]=>
-      string(7) "dc:east"
+      ["dc"]=>
+      string(4) "east"
     }
   }
 }

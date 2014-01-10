@@ -1,3 +1,18 @@
+/**
+ *  Copyright 2009-2013 10gen, Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
 #include "collection.h"
 #include "types.h"
 #include "read_preference.h"
@@ -8,6 +23,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#ifndef WIN32
+#include <unistd.h>
+#endif
 
 /* Helpers */
 char *mongo_connection_type(int type)
@@ -29,7 +48,7 @@ static void mongo_print_connection_info(mongo_con_manager *manager, mongo_connec
 	mongo_manager_log(manager, MLOG_RS, level,
 		"- connection: type: %s, socket: %d, ping: %d, hash: %s",
 		mongo_connection_type(con->connection_type),
-		con->socket,
+		42, /* FIXME: STREAMS: Maybe we do need a union here: con->socket, */
 		con->ping_ms,
 		con->hash
 	);
@@ -51,9 +70,9 @@ char *mongo_read_preference_type_to_name(int type)
 {
 	switch (type) {
 		case MONGO_RP_PRIMARY:             return "primary";
-		case MONGO_RP_PRIMARY_PREFERRED:   return "primary preferred";
+		case MONGO_RP_PRIMARY_PREFERRED:   return "primaryPreferred";
 		case MONGO_RP_SECONDARY:           return "secondary";
-		case MONGO_RP_SECONDARY_PREFERRED: return "secondary preferred";
+		case MONGO_RP_SECONDARY_PREFERRED: return "secondaryPreferred";
 		case MONGO_RP_NEAREST:             return "nearest";
 	}
 	return "unknown";
@@ -64,13 +83,22 @@ static mcon_collection *filter_connections(mongo_con_manager *manager, int types
 {
 	mcon_collection *col;
 	mongo_con_manager_item *ptr = manager->connections;
+	int current_pid, connection_pid;
+
+	current_pid = getpid();
 	col = mcon_init_collection(sizeof(mongo_connection*));
 
 	mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "filter_connections: adding connections:");
 	while (ptr) {
-		if (ptr->connection->connection_type & types) {
-			mongo_print_connection_info(manager, ptr->connection, MLOG_FINE);
-			mcon_collection_add(col, ptr->connection);
+		mongo_connection *con = (mongo_connection *) ptr->data;
+		connection_pid = mongo_server_hash_to_pid(con->hash);
+
+		if (connection_pid != current_pid) {
+			mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "filter_connections: skipping %s as it doesn't match the current pid (%d)", con->hash, current_pid);
+			manager->forget(manager, con);
+		} else if (con->connection_type & types) {
+			mongo_print_connection_info(manager, con, MLOG_FINE);
+			mcon_collection_add(col, con);
 		}
 		ptr = ptr->next;
 	}
@@ -149,14 +177,17 @@ static int candidate_matches_tags(mongo_con_manager *manager, mongo_connection *
 	}
 }
 
-static mcon_collection* mongo_filter_candidates_by_tagset(mongo_con_manager *manager, mcon_collection *candidates, mongo_read_preference_tagset *tagset)
+static mcon_collection* mongo_filter_candidates_by_tagset(mongo_con_manager *manager, mcon_collection *candidates, mongo_read_preference_tagset *tagset, int rp_type)
 {
 	int              i;
 	mcon_collection *tmp;
 
 	tmp = mcon_init_collection(sizeof(mongo_connection*));
 	for (i = 0; i < candidates->count; i++) {
-		if (candidate_matches_tags(manager, (mongo_connection *) candidates->data[i], tagset)) {
+		if (rp_type == MONGO_RP_PRIMARY_PREFERRED && (((mongo_connection *) candidates->data[i])->connection_type == MONGO_NODE_PRIMARY)) {
+			mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "candidate_matches_tags: added primary regardless of tags: %s", ((mongo_connection *) candidates->data[i])->hash);
+			mcon_collection_add(tmp, candidates->data[i]);
+		} else if (candidate_matches_tags(manager, (mongo_connection *) candidates->data[i], tagset)) {
 			mcon_collection_add(tmp, candidates->data[i]);
 		}
 	}
@@ -166,7 +197,7 @@ static mcon_collection* mongo_filter_candidates_by_tagset(mongo_con_manager *man
 char *mongo_read_preference_squash_tagset(mongo_read_preference_tagset *tagset)
 {
 	int    i;
-	struct mcon_str str = { 0 };
+	struct mcon_str str = { 0, 0, 0 };
 
 	for (i = 0; i < tagset->tag_count; i++) {
 		if (i) {
@@ -198,7 +229,7 @@ static mcon_collection *mongo_filter_candidates_by_replicaset_name(mongo_con_man
 		 * [ replicaset => true ], although it would not support one PHP worker
 		 * process connecting to multiple replicasets correctly. */
 		if (candidate_replsetname) {
-			if (!servers->repl_set_name || strcmp(candidate_replsetname, servers->repl_set_name) == 0) {
+			if (!servers->options.repl_set_name || strcmp(candidate_replsetname, servers->options.repl_set_name) == 0) {
 				mongo_print_connection_info(manager, (mongo_connection *) candidates->data[i], MLOG_FINE);
 				mcon_collection_add(filtered, (mongo_connection *) candidates->data[i]);
 			}
@@ -236,6 +267,55 @@ static mcon_collection *mongo_filter_candidates_by_seed(mongo_con_manager *manag
 	return filtered;
 }
 
+static mcon_collection *mongo_filter_candidates_by_credentials(mongo_con_manager *manager, mcon_collection *candidates, mongo_servers *servers)
+{
+	int              i;
+	char            *db, *username, *auth_hash, *hashed = NULL;
+	mcon_collection *filtered;
+
+	mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "limiting by credentials");
+	filtered = mcon_init_collection(sizeof(mongo_connection*));
+
+	for (i = 0; i < candidates->count; i++) {
+		db = username = auth_hash = hashed = NULL;
+		mongo_server_split_hash(((mongo_connection *) candidates->data[i])->hash, NULL, NULL, NULL, &db, &username, &auth_hash, NULL);
+		if (servers->server[0]->username && servers->server[0]->password && servers->server[0]->db) {
+			if (strcmp(db, servers->server[0]->db) != 0) {
+				mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "- skipping '%s', database didn't match ('%s' vs '%s')", ((mongo_connection *) candidates->data[i])->hash, db, servers->server[0]->db);
+				goto skip;
+			}
+			if (strcmp(username, servers->server[0]->username) != 0) {
+				mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "- skipping '%s', username didn't match ('%s' vs '%s')", ((mongo_connection *) candidates->data[i])->hash, username, servers->server[0]->username);
+				goto skip;
+			}
+			hashed = mongo_server_create_hashed_password(username, servers->server[0]->password);
+			if (strcmp(auth_hash, hashed) != 0) {
+				mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "- skipping '%s', authentication hash didn't match ('%s' vs '%s')", ((mongo_connection *) candidates->data[i])->hash, auth_hash, hashed);
+				goto skip;
+			}
+		}
+
+		mcon_collection_add(filtered, (mongo_connection *) candidates->data[i]);
+		mongo_print_connection_info(manager, (mongo_connection *) candidates->data[i], MLOG_FINE);
+skip:
+		if (db) {
+			free(db);
+		}
+		if (username) {
+			free(username);
+		}
+		if (auth_hash) {
+			free(auth_hash);
+		}
+		if (hashed) {
+			free(hashed);
+		}
+	}
+	mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "limiting by credentials: done");
+
+	return filtered;
+}
+
 mcon_collection* mongo_find_candidate_servers(mongo_con_manager *manager, mongo_read_preference *rp, mongo_servers *servers)
 {
 	int              i;
@@ -244,11 +324,15 @@ mcon_collection* mongo_find_candidate_servers(mongo_con_manager *manager, mongo_
 	mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "finding candidate servers");
 	all = mongo_find_all_candidate_servers(manager, rp);
 
-	if (servers->con_type == MONGO_CON_TYPE_REPLSET) {
+	if (servers->options.con_type == MONGO_CON_TYPE_REPLSET) {
 		filtered = mongo_filter_candidates_by_replicaset_name(manager, all, servers);
 	} else {
 		filtered = mongo_filter_candidates_by_seed(manager, all, servers);
 	}
+	mcon_collection_free(all);
+	all = filtered;
+
+	filtered = mongo_filter_candidates_by_credentials(manager, all, servers);
 	mcon_collection_free(all);
 	all = filtered;
 
@@ -260,7 +344,7 @@ mcon_collection* mongo_find_candidate_servers(mongo_con_manager *manager, mongo_
 			char *tmp_ts = mongo_read_preference_squash_tagset(rp->tagsets[i]);
 
 			mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "checking tagset: %s", tmp_ts);
-			filtered = mongo_filter_candidates_by_tagset(manager, all, rp->tagsets[i]);
+			filtered = mongo_filter_candidates_by_tagset(manager, all, rp->tagsets[i], rp->type);
 			mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "tagset %s matched %d candidates", tmp_ts, filtered->count);
 			free(tmp_ts);
 
@@ -269,6 +353,7 @@ mcon_collection* mongo_find_candidate_servers(mongo_con_manager *manager, mongo_
 				return filtered;
 			}
 		}
+		mcon_collection_free(filtered);
 		mcon_collection_free(all);
 		return NULL;
 	} else {
@@ -373,7 +458,7 @@ mcon_collection *mongo_sort_servers(mongo_con_manager *manager, mcon_collection 
 	return col;
 }
 
-mcon_collection *mongo_select_nearest_servers(mongo_con_manager *manager, mcon_collection *col, mongo_read_preference *rp)
+mcon_collection *mongo_select_nearest_servers(mongo_con_manager *manager, mcon_collection *col, mongo_server_options *options, mongo_read_preference *rp)
 {
 	mcon_collection *filtered;
 	int              i, nearest_ping;
@@ -394,7 +479,7 @@ mcon_collection *mongo_select_nearest_servers(mongo_con_manager *manager, mcon_c
 
 			/* FIXME: Change to iterator later */
 			for (i = 0; i < col->count; i++) {
-				if (((mongo_connection*)col->data[i])->ping_ms <= nearest_ping + MONGO_RP_CUTOFF) {
+				if (((mongo_connection*)col->data[i])->ping_ms <= nearest_ping + options->secondaryAcceptableLatencyMS) {
 					mcon_collection_add(filtered, col->data[i]);
 				}
 			}
@@ -413,21 +498,52 @@ mcon_collection *mongo_select_nearest_servers(mongo_con_manager *manager, mcon_c
 	return filtered;
 }
 
+/* The algorithm works as follows: In case we have a read preference of
+ * primary, secondary or nearest the set will always contain a set of all nodes
+ * that should always be considered to be returned. With primary, there is only
+ * going to be one node, with primary the set contains only secondaries and
+ * with nearest we do not prefer a secondary over a primary or v.v.
+ *
+ * In case we have a read preference of primaryPreferred or
+ * secondaryPreferred, we need to do a bit more logic for selecting the node
+ * that we use. */
 mongo_connection *mongo_pick_server_from_set(mongo_con_manager *manager, mcon_collection *col, mongo_read_preference *rp)
 {
 	mongo_connection *con = NULL;
-	int entry = rand() % col->count;
+	int entry;
 
+	/* If we prefer the primary, we check whether the first node is a primary
+	 * (which it should be if it's available and sorted according to primary >
+	 * secondary). If the first node in the list is no primary, we fall back
+	 * to picking a random node from the set. */
 	if (rp->type == MONGO_RP_PRIMARY_PREFERRED) {
 		if (((mongo_connection*)col->data[0])->connection_type == MONGO_NODE_PRIMARY) {
-			mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "pick server: the primary");
+			mongo_manager_log(manager, MLOG_RS, MLOG_INFO, "pick server: the primary");
 			con = (mongo_connection*)col->data[0];
 			mongo_print_connection_info(manager, con, MLOG_INFO);
 			return con;
 		}
 	}
+
+	/* If we prefer a secondary, then we need to ignore the last item from the
+	 * list, as this is the primary node - but only if there is more than one
+	 * node in the list AND the last node in the list is a primary. */
+	if (rp->type == MONGO_RP_SECONDARY_PREFERRED) {
+		if (
+			(col->count > 1) &&
+			(((mongo_connection*)col->data[col->count - 1])->connection_type == MONGO_NODE_PRIMARY)
+		) {
+			entry = rand() % (col->count - 1);
+			mongo_manager_log(manager, MLOG_RS, MLOG_INFO, "pick server: random element %d while ignoring the primary", entry);
+			con = (mongo_connection*)col->data[entry];
+			mongo_print_connection_info(manager, con, MLOG_INFO);
+			return con;
+		}
+	}
+
 	/* For now, we just pick a random server from the set */
-	mongo_manager_log(manager, MLOG_RS, MLOG_FINE, "pick server: random element %d", entry);
+	entry = rand() % col->count;
+	mongo_manager_log(manager, MLOG_RS, MLOG_INFO, "pick server: random element %d", entry);
 	con = (mongo_connection*)col->data[entry];
 	mongo_print_connection_info(manager, con, MLOG_INFO);
 	return con;
@@ -453,10 +569,15 @@ void mongo_read_preference_tagset_dtor(mongo_read_preference_tagset *tagset)
 {
 	int i;
 
-	for (i = 0; i < tagset->tag_count; i++) {
-		free(tagset->tags[i]);
+	if (tagset->tag_count > 0) {
+		for (i = 0; i < tagset->tag_count; i++) {
+			free(tagset->tags[i]);
+		}
+
+		tagset->tag_count = 0;
+		free(tagset->tags);
 	}
-	free(tagset->tags);
+
 	free(tagset);
 }
 
@@ -464,9 +585,14 @@ void mongo_read_preference_dtor(mongo_read_preference *rp)
 {
 	int i;
 
+	if (rp->tagset_count == 0) {
+		return;
+	}
+
 	for (i = 0; i < rp->tagset_count; i++) {
 		mongo_read_preference_tagset_dtor(rp->tagsets[i]);
 	}
+	rp->tagset_count = 0;
 	free(rp->tagsets);
 	/* We are not freeing *rp itself, as that's not always a pointer */
 }
@@ -500,3 +626,12 @@ void mongo_read_preference_replace(mongo_read_preference *from, mongo_read_prefe
 	mongo_read_preference_dtor(to);
 	mongo_read_preference_copy(from, to);
 }
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: fdm=marker
+ * vim: noet sw=4 ts=4
+ */

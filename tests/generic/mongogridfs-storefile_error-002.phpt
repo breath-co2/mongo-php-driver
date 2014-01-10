@@ -1,11 +1,11 @@
 --TEST--
 MongoGridFS::storeFile() throws exception when overwriting files
 --SKIPIF--
-<?php require dirname(__FILE__) . "/skipif.inc";?>
+<?php require "tests/utils/standalone.inc";?>
 --FILE--
 <?php
-require_once dirname(__FILE__) . "/../utils.inc";
-$mongo = mongo();
+require_once "tests/utils/server.inc";
+$mongo = mongo_standalone();
 $db = $mongo->selectDB(dbname());
 
 $gridfs = $db->getGridFS();
@@ -19,4 +19,4 @@ try {
     echo $e->getMessage(), "\n";
 }
 --EXPECTF--
-Could not store file: %s:%d: E11000 duplicate key error index: %s.fs.chunks.$files_id_1_n_1  dup key: { : 1, : 0 }
+Could not store file:%sE11000 duplicate key error index: %s.fs.chunks.$files_id_1_n_1  dup key: { : 1, : 0 }

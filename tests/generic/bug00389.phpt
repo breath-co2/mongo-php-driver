@@ -1,19 +1,26 @@
 --TEST--
 Test for PHP-389: Setting arbitrary flags.
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
 <?php
-require_once dirname(__FILE__) ."/../utils.inc";
-$m = mongo();
-$c = $m->phpunit->test;
+require_once "tests/utils/server.inc";
+$m = mongo_standalone();
+
+/* Ensure the collection actually exists. If not, the oplogReplay flag will not
+ * cause an "no ts field in query" error on the server.
+ */
+$m->phpunit->createCollection('bug00389');
+$c = $m->phpunit->bug00389;
 
 /* Tailable */
 try {
 	$cursor = $c->find()->tailable();
 	foreach( $cursor as $foo ) { }
 } catch ( MongoCursorException $e ) {
-	echo $e->getMessage(), "\n";
+    if (strpos($e->getMessage(), "tailable cursor requested on non capped collection")) {
+        echo "..tailable cursor requested on non capped collection...\n";
+    }
 }
 
 /* Slave okay */
@@ -35,30 +42,30 @@ foreach( $cursor as $foo ) { }
 /* with setFlag() */
 for ( $i = 1; $i < 11; $i++ )
 {
-	echo "Setting flag #", $i, "\n";
-	try {
-		$cursor = $c->find()->setFlag( $i );
-		foreach( $cursor as $foo ) { }
-	} catch ( MongoCursorException $e ) {
-		echo $e->getMessage(), "\n";
-	}
+    echo "Setting flag #", $i, "\n";
+    try {
+        $cursor = $c->find(array("ts" => 1))->setFlag( $i );
+        foreach( $cursor as $foo ) { }
+    } catch ( MongoCursorException $e ) {
+        if (strpos($e->getMessage(), "tailable cursor requested on non capped collection")) {
+            echo "..tailable cursor requested on non capped collection...\n";
+        }
+    }
 }
 ?>
 --EXPECTF--
-%s:%d: tailable cursor requested on non capped collection
+..tailable cursor requested on non capped collection...
+
+%s: Function MongoCursor::slaveOkay() is deprecated in %sbug00389.php on line %d
 Setting flag #1
-%s:%d: tailable cursor requested on non capped collection
+..tailable cursor requested on non capped collection...
 Setting flag #2
 Setting flag #3
-
-Warning: MongoCursor::setFlag(): The CURSOR_FLAG_OPLOG_REPLAY(3) and CURSOR_FLAG_EXHAUST(6) flags are not supported. in %sbug00389.php on line %d
-
-Warning: Invalid argument supplied for foreach() in %sbug00389.php on line %d
 Setting flag #4
 Setting flag #5
 Setting flag #6
 
-Warning: MongoCursor::setFlag(): The CURSOR_FLAG_OPLOG_REPLAY(3) and CURSOR_FLAG_EXHAUST(6) flags are not supported. in %sbug00389.php on line %d
+Warning: MongoCursor::setFlag(): The CURSOR_FLAG_EXHAUST(6) flag is not supported in %sbug00389.php on line %d
 
 Warning: Invalid argument supplied for foreach() in %sbug00389.php on line %d
 Setting flag #7

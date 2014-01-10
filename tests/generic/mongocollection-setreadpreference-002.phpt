@@ -1,39 +1,119 @@
 --TEST--
-MongoDB::setReadPreference/MongoCollection::getReadPreference [2]
+MongoCollection::setReadPreference() should set tags
 --SKIPIF--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/standalone.inc"; ?>
 --FILE--
-<?php require_once dirname(__FILE__) ."/skipif.inc"; ?>
+<?php require_once "tests/utils/server.inc"; ?>
 <?php
-$host = hostname();
-$port = port();
-$db   = dbname();
 
-$baseString = sprintf("mongodb://%s:%d/%s?readPreference=secondaryPreferred", $host, $port, $db);
+$tagsets = array(
+    /* no tagsets */
+    array(),
+    /* one tag set */
+    array( array( 'dc' => 'east' ) ),
+    array( array( 'dc' => 'east', 'use' => 'reporting' ) ),
+    array( array() ),
+    /* two tag sets */
+    array( array( 'dc' => 'east', 'use' => 'reporting' ), array( 'dc' => 'west' ) ),
+    /* two tag sets + empty one */
+    array( array( 'dc' => 'east', 'use' => 'reporting' ), array( 'dc' => 'west' ), array() ),
+);
 
-// set before db reference
-$m = new mongo($baseString);
-$m->setReadPreference(Mongo::RP_PRIMARY_PREFERRED);
-$c = $m->phpunit->test;
-var_dump($c->getReadPreference());
+foreach ($tagsets as $tagset) {
+    $m = new_mongo_standalone();
+    $c = $m->phpunit->test;
+    $c->setReadPreference(Mongo::RP_SECONDARY, $tagset);
+    $rp = $c->getReadPreference();
+    var_dump($rp);
 
-// set after db reference
-$m = new mongo($baseString);
-$c = $m->phpunit->test;
-$m->setReadPreference(Mongo::RP_SECONDARY);
-var_dump($c->getReadPreference());
-
+    echo "---\n";
+}
 ?>
 --EXPECT--
+array(1) {
+  ["type"]=>
+  string(9) "secondary"
+}
+---
 array(2) {
   ["type"]=>
-  int(1)
-  ["type_string"]=>
-  string(17) "primary preferred"
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(1) {
+    [0]=>
+    array(1) {
+      ["dc"]=>
+      string(4) "east"
+    }
+  }
 }
+---
 array(2) {
   ["type"]=>
-  int(3)
-  ["type_string"]=>
-  string(19) "secondary preferred"
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["dc"]=>
+      string(4) "east"
+      ["use"]=>
+      string(9) "reporting"
+    }
+  }
 }
+---
+array(2) {
+  ["type"]=>
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(1) {
+    [0]=>
+    array(0) {
+    }
+  }
+}
+---
+array(2) {
+  ["type"]=>
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(2) {
+    [0]=>
+    array(2) {
+      ["dc"]=>
+      string(4) "east"
+      ["use"]=>
+      string(9) "reporting"
+    }
+    [1]=>
+    array(1) {
+      ["dc"]=>
+      string(4) "west"
+    }
+  }
+}
+---
+array(2) {
+  ["type"]=>
+  string(9) "secondary"
+  ["tagsets"]=>
+  array(3) {
+    [0]=>
+    array(2) {
+      ["dc"]=>
+      string(4) "east"
+      ["use"]=>
+      string(9) "reporting"
+    }
+    [1]=>
+    array(1) {
+      ["dc"]=>
+      string(4) "west"
+    }
+    [2]=>
+    array(0) {
+    }
+  }
+}
+---
